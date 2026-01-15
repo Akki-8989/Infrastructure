@@ -93,8 +93,8 @@ jobs:
     - name: Extract Infrastructure Repo
       id: infra
       run: |
-        # github.workflow_ref = "Owner/RepoName/.github/workflows/deploy-template.yml@ref"
         WORKFLOW_REF="${{ github.workflow_ref }}"
+        echo "Full workflow_ref: $WORKFLOW_REF"
         INFRA_REPO=$(echo "$WORKFLOW_REF" | cut -d'/' -f1-2)
         echo "repo=$INFRA_REPO" >> $GITHUB_OUTPUT
         echo "Infrastructure repo: $INFRA_REPO"
@@ -104,6 +104,23 @@ jobs:
       with:
         repository: ${{ steps.infra.outputs.repo }}
         path: infra
+
+    - name: Debug - List contents
+      run: |
+        echo "=== Infra repo value ==="
+        echo "${{ steps.infra.outputs.repo }}"
+        echo ""
+        echo "=== Current directory ==="
+        pwd
+        echo ""
+        echo "=== List current directory ==="
+        ls -la
+        echo ""
+        echo "=== List infra folder ==="
+        ls -la ./infra/ || echo "infra folder not found"
+        echo ""
+        echo "=== List infra/terraform folder ==="
+        ls -la ./infra/terraform/ || echo "terraform folder not found"
 
     - name: Azure Login
       uses: azure/login@v2
