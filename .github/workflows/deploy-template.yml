@@ -90,10 +90,19 @@ jobs:
       deployment_token: ${{ steps.terraform_output.outputs.deployment_token }}
 
     steps:
+    - name: Extract Infrastructure Repo
+      id: infra
+      run: |
+        # github.workflow_ref = "Owner/RepoName/.github/workflows/deploy-template.yml@ref"
+        WORKFLOW_REF="${{ github.workflow_ref }}"
+        INFRA_REPO=$(echo "$WORKFLOW_REF" | cut -d'/' -f1-2)
+        echo "repo=$INFRA_REPO" >> $GITHUB_OUTPUT
+        echo "Infrastructure repo: $INFRA_REPO"
+
     - name: Checkout Infrastructure Repository
       uses: actions/checkout@v4
       with:
-        repository: ${{ github.repository_owner }}/${{ github.event.inputs.infra_repo || 'Common-Infra' }}
+        repository: ${{ steps.infra.outputs.repo }}
         path: infra
 
     - name: Azure Login
