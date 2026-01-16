@@ -7,6 +7,10 @@ on:
         required: true
         type: string
         description: 'Target repository name to deploy'
+      infra_repo:
+        required: true
+        type: string
+        description: 'Infrastructure repository name'
 
 env:
   DOTNET_VERSION: '8.0.x'
@@ -93,19 +97,13 @@ jobs:
     - name: Checkout Infrastructure Repository
       uses: actions/checkout@v4
       with:
-        repository: Akki-8989/Infrastructure
+        repository: ${{ github.repository_owner }}/${{ inputs.infra_repo }}
         path: infra
 
     - name: Debug - List contents
       run: |
-        echo "=== Current directory ==="
-        pwd
-        echo ""
-        echo "=== List current directory ==="
-        ls -la
-        echo ""
-        echo "=== List infra folder ==="
-        ls -la ./infra/
+        echo "=== Infrastructure Repo ==="
+        echo "${{ github.repository_owner }}/${{ inputs.infra_repo }}"
         echo ""
         echo "=== List infra/terraform folder ==="
         ls -la ./infra/terraform/
