@@ -131,7 +131,7 @@ jobs:
     - name: Import Existing Resources
       working-directory: ./infra/terraform
       env:
-        SQL_PASSWORD: ${{ secrets.SQL_PASSWORD }}
+        SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
       run: |
         APP_NAME="${{ inputs.repo_name }}"
         RG_NAME=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | tr '_.' '--')-rg
@@ -140,7 +140,7 @@ jobs:
         RESOURCE_PREFIX=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | tr '_.' '--')
         HAS_SQL_PASSWORD="false"
         
-        if [ -n "$SQL_PASSWORD" ]; then
+        if [ -n "$SQL_ADMIN_PASSWORD" ]; then
           HAS_SQL_PASSWORD="true"
         fi
         
@@ -181,7 +181,7 @@ jobs:
             terraform import \
               -var="app_name=$APP_NAME" \
               -var="project_type=$PROJECT_TYPE" \
-              -var="sql_admin_password=$SQL_PASSWORD" \
+              -var="sql_admin_password=$SQL_ADMIN_PASSWORD" \
               "$RESOURCE_ADDRESS" "$RESOURCE_ID" 2>&1 && echo "$RESOURCE_TYPE: Import SUCCESS" || echo "$RESOURCE_TYPE: Import FAILED"
           else
             terraform import \
@@ -292,11 +292,11 @@ jobs:
       run: |
         PROJECT_TYPE="${{ needs.detect-and-setup.outputs.project_type }}"
         
-        if [ -n "${{ secrets.SQL_PASSWORD }}" ] && [ "$PROJECT_TYPE" = "backend" ]; then
+        if [ -n "${{ secrets.SQL_ADMIN_PASSWORD }}" ] && [ "$PROJECT_TYPE" = "backend" ]; then
           terraform plan \
             -var="app_name=${{ inputs.repo_name }}" \
             -var="project_type=$PROJECT_TYPE" \
-            -var="sql_admin_password=${{ secrets.SQL_PASSWORD }}" \
+            -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" \
             -out=tfplan
         else
           terraform plan \
