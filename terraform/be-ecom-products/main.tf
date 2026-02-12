@@ -34,15 +34,17 @@ variable "project_type" {
   default     = "backend"
 }
 
+# ← NEW: Single backend URL (Scenario 1)
 variable "backend_api_url" {
   type        = string
   description = "Backend API URL for frontend to connect to (single backend scenario)"
   default     = ""
 }
 
+# ← NEW: Multiple backend URLs comma-separated (Scenario 2 - triggers gateway)
 variable "backend_urls" {
   type        = string
-  description = "Comma-separated backend URLs (multiple backend scenario - triggers gateway creation)"
+  description = "Comma-separated backend URLs (multiple backends scenario - auto-creates API gateway)"
   default     = ""
 }
 
@@ -55,7 +57,9 @@ locals {
   create_sql_server = var.sql_admin_password != "" && var.project_type == "backend"
   is_frontend       = var.project_type == "frontend"
   is_backend        = var.project_type == "backend"
-  create_gateway    = var.backend_urls != "" && local.is_frontend
+
+  # ← NEW: Gateway created only when frontend has multiple backends
+  create_gateway = var.backend_urls != "" && local.is_frontend
 }
 
 # Resource Group
@@ -169,8 +173,8 @@ resource "azurerm_static_web_app" "main" {
 }
 
 # ============================================
-# GATEWAY RESOURCES (YARP Reverse Proxy)
-# Created only when frontend has multiple backends
+# ← NEW: API GATEWAY RESOURCES (Conditional)
+# Only created when frontend has multiple backends
 # ============================================
 
 # App Service Plan for Gateway
@@ -246,7 +250,7 @@ output "static_webapp_api_key" {
   sensitive = true
 }
 
-# Gateway outputs
+# ← NEW: Gateway outputs
 output "gateway_webapp_name" {
   value = local.create_gateway ? azurerm_windows_web_app.gateway[0].name : ""
 }
