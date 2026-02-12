@@ -14,7 +14,12 @@ on:
       backend_api_url:
         required: false
         type: string
-        description: 'Backend API URL for frontend to connect to'
+        description: 'Backend API URL for frontend (single backend scenario)'
+      # ← NEW: Multiple backends input (triggers gateway)
+      backend_urls:
+        required: false
+        type: string
+        description: 'Comma-separated backend URLs (multiple backends - auto-creates gateway)'
 
 env:
   DOTNET_VERSION: '8.0.x'
@@ -28,6 +33,9 @@ jobs:
       project_path: ${{ steps.detect.outputs.project_path }}
       build_command: ${{ steps.detect.outputs.build_command }}
       output_path: ${{ steps.detect.outputs.output_path }}
+      # ← NEW: API URL output (single backend URL or gateway URL)
+      api_url: ${{ steps.compute_api_url.outputs.url }}
+      needs_gateway: ${{ steps.compute_api_url.outputs.needs_gateway }}
 
     steps:
       - name: Checkout Application Repository
@@ -88,6 +96,26 @@ jobs:
 
           echo "Detected project type: $PROJECT_TYPE"
 
+      # ← NEW: Compute the API URL for frontend
+      - name: Compute API URL
+        id: compute_api_url
+        run: |
+          if [ -n "${{ inputs.backend_urls }}" ]; then
+            SLUG=$(echo "${{ inputs.repo_name }}" | tr '[:upper:]' '[:lower:]' | tr '_.' '--')
+            GATEWAY_URL="https://${SLUG}-gateway-webapp.azurewebsites.net"
+            echo "url=${GATEWAY_URL}" >> $GITHUB_OUTPUT
+            echo "needs_gateway=true" >> $GITHUB_OUTPUT
+            echo "Multiple backends detected. Frontend will use Gateway URL: ${GATEWAY_URL}"
+          elif [ -n "${{ inputs.backend_api_url }}" ]; then
+            echo "url=${{ inputs.backend_api_url }}" >> $GITHUB_OUTPUT
+            echo "needs_gateway=false" >> $GITHUB_OUTPUT
+            echo "Single backend detected. Frontend will use direct URL: ${{ inputs.backend_api_url }}"
+          else
+            echo "url=" >> $GITHUB_OUTPUT
+            echo "needs_gateway=false" >> $GITHUB_OUTPUT
+            echo "No backend links configured."
+          fi
+
   terraform:
     runs-on: ubuntu-latest
     needs: detect-and-setup
@@ -96,6 +124,7 @@ jobs:
       resource_group: ${{ steps.terraform_output.outputs.resource_group }}
       static_webapp_name: ${{ steps.terraform_output.outputs.static_webapp_name }}
       deployment_token: ${{ steps.terraform_output.outputs.deployment_token }}
+      gateway_webapp_name: ${{ steps.terraform_output.outputs.gateway_webapp_name }}
 
     steps:
       - name: Checkout Infrastructure Repository
@@ -146,6 +175,7 @@ jobs:
           PROJECT_TYPE="${{ needs.detect-and-setup.outputs.project_type }}"
           RESOURCE_PREFIX=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | tr '_.' '--')
           HAS_SQL_PASSWORD="false"
+          NEEDS_GATEWAY="${{ needs.detect-and-setup.outputs.needs_gateway }}"
 
           if [ -n "$SQL_ADMIN_PASSWORD" ]; then
             HAS_SQL_PASSWORD="true"
@@ -156,49 +186,38 @@ jobs:
           echo "Project Type: $PROJECT_TYPE"
           echo "Resource Prefix: $RESOURCE_PREFIX"
           echo "Has SQL Password: $HAS_SQL_PASSWORD"
+          echo "Needs Gateway: $NEEDS_GATEWAY"
           echo "=========================================="
 
           resource_exists_in_azure() {
             local CHECK_COMMAND=$1
-            if eval "$CHECK_COMMAND" > /dev/null 2>&1; then
-              return 0
-            else
-              return 1
-            fi
+            if eval "$CHECK_COMMAND" > /dev/null 2>&1; then return 0; else return 1; fi
           }
 
           resource_in_state() {
             local RESOURCE_ADDRESS=$1
-            if terraform state list 2>/dev/null | grep -q "$RESOURCE_ADDRESS"; then
-              return 0
-            else
-              return 1
-            fi
+            if terraform state list 2>/dev/null | grep -q "$RESOURCE_ADDRESS"; then return 0; else return 1; fi
           }
 
           import_resource() {
             local RESOURCE_TYPE=$1
             local RESOURCE_ADDRESS=$2
             local RESOURCE_ID=$3
-
             echo ""
             echo "--- Importing $RESOURCE_TYPE ---"
-
+            IMPORT_VARS="-var=app_name=$APP_NAME -var=project_type=$PROJECT_TYPE"
             if [ "$HAS_SQL_PASSWORD" = "true" ]; then
-              terraform import \
-                -var="app_name=$APP_NAME" \
-                -var="project_type=$PROJECT_TYPE" \
-                -var="sql_admin_password=$SQL_ADMIN_PASSWORD" \
-                "$RESOURCE_ADDRESS" "$RESOURCE_ID" 2>&1 && echo "$RESOURCE_TYPE: Import SUCCESS" || echo "$RESOURCE_TYPE: Import FAILED"
-            else
-              terraform import \
-                -var="app_name=$APP_NAME" \
-                -var="project_type=$PROJECT_TYPE" \
-                "$RESOURCE_ADDRESS" "$RESOURCE_ID" 2>&1 && echo "$RESOURCE_TYPE: Import SUCCESS" || echo "$RESOURCE_TYPE: Import FAILED"
+              IMPORT_VARS="$IMPORT_VARS -var=sql_admin_password=$SQL_ADMIN_PASSWORD"
             fi
+            if [ -n "${{ inputs.backend_api_url }}" ]; then
+              IMPORT_VARS="$IMPORT_VARS -var=backend_api_url=${{ inputs.backend_api_url }}"
+            fi
+            if [ -n "${{ inputs.backend_urls }}" ]; then
+              IMPORT_VARS="$IMPORT_VARS -var=backend_urls=${{ inputs.backend_urls }}"
+            fi
+            terraform import $IMPORT_VARS "$RESOURCE_ADDRESS" "$RESOURCE_ID" 2>&1 && echo "$RESOURCE_TYPE: Import SUCCESS" || echo "$RESOURCE_TYPE: Import FAILED"
           }
 
-          # 1. Resource Group
           echo ""
           echo "=== Checking Resource Group ==="
           if resource_in_state "azurerm_resource_group.main"; then
@@ -210,9 +229,7 @@ jobs:
             echo "Resource Group: Does NOT exist - will be created"
           fi
 
-          # Backend Resources
           if [ "$PROJECT_TYPE" = "backend" ]; then
-
             echo ""
             echo "=== Checking App Service Plan ==="
             if resource_in_state "azurerm_service_plan.main\[0\]"; then
@@ -275,7 +292,6 @@ jobs:
             fi
           fi
 
-          # Frontend Resources
           if [ "$PROJECT_TYPE" = "frontend" ]; then
             echo ""
             echo "=== Checking Static Web App ==="
@@ -286,6 +302,30 @@ jobs:
               import_resource "Static Web App" "azurerm_static_web_app.main[0]" "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Web/staticSites/${RESOURCE_PREFIX}-static"
             else
               echo "Static Web App: Does NOT exist - will be created"
+            fi
+
+            if [ "$NEEDS_GATEWAY" = "true" ]; then
+              echo ""
+              echo "=== Checking Gateway App Service Plan ==="
+              if resource_in_state "azurerm_service_plan.gateway\[0\]"; then
+                echo "Gateway Plan: Already in state - SKIP"
+              elif resource_exists_in_azure "az appservice plan show --name ${RESOURCE_PREFIX}-gateway-plan --resource-group $RG_NAME"; then
+                echo "Gateway Plan: EXISTS in Azure"
+                import_resource "Gateway Plan" "azurerm_service_plan.gateway[0]" "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Web/serverFarms/${RESOURCE_PREFIX}-gateway-plan"
+              else
+                echo "Gateway Plan: Does NOT exist - will be created"
+              fi
+
+              echo ""
+              echo "=== Checking Gateway Web App ==="
+              if resource_in_state "azurerm_windows_web_app.gateway\[0\]"; then
+                echo "Gateway Web App: Already in state - SKIP"
+              elif resource_exists_in_azure "az webapp show --name ${RESOURCE_PREFIX}-gateway-webapp --resource-group $RG_NAME"; then
+                echo "Gateway Web App: EXISTS in Azure"
+                import_resource "Gateway Web App" "azurerm_windows_web_app.gateway[0]" "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Web/sites/${RESOURCE_PREFIX}-gateway-webapp"
+              else
+                echo "Gateway Web App: Does NOT exist - will be created"
+              fi
             fi
           fi
 
@@ -298,19 +338,17 @@ jobs:
         working-directory: ./infra/terraform/ui-test-app
         run: |
           PROJECT_TYPE="${{ needs.detect-and-setup.outputs.project_type }}"
-
+          TF_VARS="-var=app_name=ui-test-app -var=project_type=$PROJECT_TYPE"
           if [ -n "${{ secrets.SQL_ADMIN_PASSWORD }}" ] && [ "$PROJECT_TYPE" = "backend" ]; then
-            terraform plan \
-              -var="app_name=ui-test-app" \
-              -var="project_type=$PROJECT_TYPE" \
-              -var="sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}" \
-              -out=tfplan
-          else
-            terraform plan \
-              -var="app_name=ui-test-app" \
-              -var="project_type=$PROJECT_TYPE" \
-              -out=tfplan
+            TF_VARS="$TF_VARS -var=sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}"
           fi
+          if [ -n "${{ inputs.backend_api_url }}" ]; then
+            TF_VARS="$TF_VARS -var=backend_api_url=${{ inputs.backend_api_url }}"
+          fi
+          if [ -n "${{ inputs.backend_urls }}" ]; then
+            TF_VARS="$TF_VARS -var=backend_urls=${{ inputs.backend_urls }}"
+          fi
+          terraform plan $TF_VARS -out=tfplan
 
       - name: Terraform Apply
         working-directory: ./infra/terraform/ui-test-app
@@ -321,39 +359,35 @@ jobs:
         working-directory: ./infra/terraform/ui-test-app
         run: |
           echo "resource_group=$(terraform output -raw resource_group)" >> $GITHUB_OUTPUT
-
           PROJECT_TYPE="${{ needs.detect-and-setup.outputs.project_type }}"
-
           if [ "$PROJECT_TYPE" = "backend" ]; then
             echo "webapp_name=$(terraform output -raw webapp_name)" >> $GITHUB_OUTPUT
           else
             echo "static_webapp_name=$(terraform output -raw static_webapp_name)" >> $GITHUB_OUTPUT
             echo "deployment_token=$(terraform output -raw static_webapp_api_key)" >> $GITHUB_OUTPUT
+            GATEWAY_NAME=$(terraform output -raw gateway_webapp_name 2>/dev/null || echo "")
+            if [ -n "$GATEWAY_NAME" ]; then
+              echo "gateway_webapp_name=$GATEWAY_NAME" >> $GITHUB_OUTPUT
+            fi
           fi
 
   build-backend:
     runs-on: ubuntu-latest
     needs: [detect-and-setup, terraform]
     if: needs.detect-and-setup.outputs.project_type == 'backend'
-
     steps:
       - name: Checkout Application Repository
         uses: actions/checkout@v4
-
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
-
       - name: Restore dependencies
         run: dotnet restore ${{ needs.detect-and-setup.outputs.project_path }}
-
       - name: Build
         run: dotnet build ${{ needs.detect-and-setup.outputs.project_path }} --configuration Release --no-restore
-
       - name: Publish
         run: dotnet publish ${{ needs.detect-and-setup.outputs.project_path }} --configuration Release --output ./publish --no-build
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -364,47 +398,121 @@ jobs:
     runs-on: ubuntu-latest
     needs: [detect-and-setup, terraform]
     if: needs.detect-and-setup.outputs.project_type == 'frontend'
-
     steps:
       - name: Checkout Application Repository
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-
       - name: Install dependencies
         run: npm ci
-
       - name: Build
         run: ${{ needs.detect-and-setup.outputs.build_command }}
         env:
           CI: false
-          VITE_API_URL: ${{ inputs.backend_api_url }}
-          REACT_APP_API_URL: ${{ inputs.backend_api_url }}
-          NEXT_PUBLIC_API_URL: ${{ inputs.backend_api_url }}
-          VUE_APP_API_URL: ${{ inputs.backend_api_url }}
-
+          VITE_API_URL: ${{ needs.detect-and-setup.outputs.api_url }}
+          REACT_APP_API_URL: ${{ needs.detect-and-setup.outputs.api_url }}
+          NEXT_PUBLIC_API_URL: ${{ needs.detect-and-setup.outputs.api_url }}
+          VUE_APP_API_URL: ${{ needs.detect-and-setup.outputs.api_url }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: frontend-artifact
           path: ${{ needs.detect-and-setup.outputs.output_path }}
 
+  build-gateway:
+    runs-on: ubuntu-latest
+    needs: [detect-and-setup, terraform]
+    if: needs.detect-and-setup.outputs.needs_gateway == 'true'
+    steps:
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Generate YARP Gateway Project
+        run: |
+          dotnet new web -n GatewayApp --no-https
+          cd GatewayApp
+          dotnet add package Yarp.ReverseProxy
+          cat > Program.cs << 'GATEWAY_CODE'
+          using Yarp.ReverseProxy.Configuration;
+
+          var builder = WebApplication.CreateBuilder(args);
+
+          var backendUrls = builder.Configuration["BACKEND_URLS"]
+              ?? Environment.GetEnvironmentVariable("BACKEND_URLS")
+              ?? "";
+
+          var backends = backendUrls.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+          var routes = new List<RouteConfig>();
+          var clusters = new List<ClusterConfig>();
+
+          foreach (var url in backends)
+          {
+              var uri = new Uri(url);
+              var name = uri.Host.Split('.')[0].Replace("-webapp", "");
+
+              routes.Add(new RouteConfig
+              {
+                  RouteId = name,
+                  ClusterId = name,
+                  Match = new RouteMatch { Path = $"/{name}/{{**catch-all}}" },
+                  Transforms = new List<IReadOnlyDictionary<string, string>>
+                  {
+                      new Dictionary<string, string> { { "PathRemovePrefix", $"/{name}" } }
+                  }
+              });
+
+              clusters.Add(new ClusterConfig
+              {
+                  ClusterId = name,
+                  Destinations = new Dictionary<string, DestinationConfig>
+                  {
+                      ["default"] = new DestinationConfig { Address = url }
+                  }
+              });
+          }
+
+          builder.Services.AddReverseProxy()
+              .LoadFromMemory(routes, clusters);
+
+          builder.Services.AddCors(options =>
+          {
+              options.AddDefaultPolicy(policy =>
+                  policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+          });
+
+          var app = builder.Build();
+
+          app.UseCors();
+          app.MapReverseProxy();
+          app.MapGet("/health", () => Results.Ok(new { status = "healthy", backends = backends.Length }));
+
+          app.Run();
+          GATEWAY_CODE
+      - name: Build Gateway
+        run: |
+          cd GatewayApp
+          dotnet publish --configuration Release --output ./publish
+      - name: Upload Gateway Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-artifact
+          path: ./GatewayApp/publish
+
   deploy-backend:
     runs-on: ubuntu-latest
     needs: [detect-and-setup, terraform, build-backend]
     if: needs.detect-and-setup.outputs.project_type == 'backend'
-
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: webapp-artifact
           path: ./publish
-
       - name: Azure Login
         uses: azure/login@v2
         with:
@@ -415,7 +523,6 @@ jobs:
               "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
               "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
             }
-
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
@@ -426,14 +533,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [detect-and-setup, terraform, build-frontend]
     if: needs.detect-and-setup.outputs.project_type == 'frontend'
-
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: frontend-artifact
           path: ./dist
-
       - name: Deploy to Azure Static Web App
         uses: Azure/static-web-apps-deploy@v1
         with:
@@ -442,3 +547,29 @@ jobs:
           action: "upload"
           app_location: "./dist"
           skip_app_build: true
+
+  deploy-gateway:
+    runs-on: ubuntu-latest
+    needs: [detect-and-setup, terraform, build-gateway]
+    if: needs.detect-and-setup.outputs.needs_gateway == 'true'
+    steps:
+      - name: Download Gateway Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gateway-artifact
+          path: ./gateway-publish
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+      - name: Deploy Gateway to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ needs.terraform.outputs.gateway_webapp_name }}
+          package: ./gateway-publish
