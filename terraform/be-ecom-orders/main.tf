@@ -30,7 +30,7 @@ variable "sql_admin_password" {
 
 variable "project_type" {
   type        = string
-  description = "Type of project: 'backend' for .NET API, 'frontend' for Static App"
+  description = "Type of project: 'backend' for .NET API, 'frontend' for React/Angular/Vue/Static"
   default     = "backend"
 }
 
@@ -42,7 +42,7 @@ variable "backend_api_url" {
 
 variable "backend_urls" {
   type        = string
-  description = "Comma-separated backend URLs (multiple backends scenario - auto-creates API gateway)"
+  description = "Comma-separated backend URLs (multiple backend scenario - triggers gateway creation)"
   default     = ""
 }
 
@@ -52,19 +52,23 @@ locals {
     ".",
     "-"
   )
-
   create_sql_server = var.sql_admin_password != "" && var.project_type == "backend"
   is_frontend       = var.project_type == "frontend"
   is_backend        = var.project_type == "backend"
-
-  create_gateway = var.backend_urls != "" && local.is_frontend
+  create_gateway    = var.backend_urls != "" && local.is_frontend
 }
 
+# Resource Group
 resource "azurerm_resource_group" "main" {
   name     = "${local.resource_prefix}-rg"
   location = var.location
 }
 
+# ============================================
+# BACKEND RESOURCES (Windows App Service)
+# ============================================
+
+# App Service Plan for Backend
 resource "azurerm_service_plan" "main" {
   count               = local.is_backend ? 1 : 0
   name                = "${local.resource_prefix}-plan"
@@ -72,8 +76,11 @@ resource "azurerm_service_plan" "main" {
   resource_group_name = azurerm_resource_group.main.name
   os_type             = "Windows"
   sku_name            = "F1"
+
+  depends_on = [azurerm_resource_group.main]
 }
 
+# Windows Web App for Backend
 resource "azurerm_windows_web_app" "main" {
   count               = local.is_backend ? 1 : 0
   name                = "${local.resource_prefix}-webapp"
@@ -92,6 +99,7 @@ resource "azurerm_windows_web_app" "main" {
     "ASPNETCORE_ENVIRONMENT" = "Production"
   }
 
+  # Auto-inject connection string when SQL Server is created
   dynamic "connection_string" {
     for_each = local.create_sql_server ? [1] : []
     content {
@@ -100,8 +108,14 @@ resource "azurerm_windows_web_app" "main" {
       value = "Server=tcp:${azurerm_mssql_server.main[0].fully_qualified_domain_name},1433;Initial Catalog=${azurerm_mssql_database.main[0].name};User ID=sqladmin;Password=${var.sql_admin_password};Encrypt=true;TrustServerCertificate=false;"
     }
   }
+
+  depends_on = [
+    azurerm_resource_group.main,
+    azurerm_service_plan.main
+  ]
 }
 
+# SQL Server (conditional - backend only)
 resource "azurerm_mssql_server" "main" {
   count                        = local.create_sql_server ? 1 : 0
   name                         = "${local.resource_prefix}-sqlserver"
@@ -110,15 +124,39 @@ resource "azurerm_mssql_server" "main" {
   version                      = "12.0"
   administrator_login          = "sqladmin"
   administrator_login_password = var.sql_admin_password
+
+  depends_on = [azurerm_resource_group.main]
 }
 
+# SQL Database (conditional - backend only)
 resource "azurerm_mssql_database" "main" {
   count     = local.create_sql_server ? 1 : 0
   name      = "${local.resource_prefix}-db"
   server_id = azurerm_mssql_server.main[0].id
   sku_name  = "Basic"
+
+  depends_on = [
+    azurerm_resource_group.main,
+    azurerm_mssql_server.main
+  ]
 }
 
+# SQL Server Firewall Rule (conditional - backend only)
+resource "azurerm_mssql_firewall_rule" "allow_azure" {
+  count            = local.create_sql_server ? 1 : 0
+  name             = "AllowAzureServices"
+  server_id        = azurerm_mssql_server.main[0].id
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "0.0.0.0"
+
+  depends_on = [azurerm_mssql_server.main]
+}
+
+# ============================================
+# FRONTEND RESOURCES (Static Web App)
+# ============================================
+
+# Azure Static Web App for Frontend
 resource "azurerm_static_web_app" "main" {
   count               = local.is_frontend ? 1 : 0
   name                = "${local.resource_prefix}-static"
@@ -126,8 +164,16 @@ resource "azurerm_static_web_app" "main" {
   location            = "eastasia"
   sku_tier            = "Free"
   sku_size            = "Free"
+
+  depends_on = [azurerm_resource_group.main]
 }
 
+# ============================================
+# GATEWAY RESOURCES (YARP Reverse Proxy)
+# Created only when frontend has multiple backends
+# ============================================
+
+# App Service Plan for Gateway
 resource "azurerm_service_plan" "gateway" {
   count               = local.create_gateway ? 1 : 0
   name                = "${local.resource_prefix}-gateway-plan"
@@ -135,8 +181,11 @@ resource "azurerm_service_plan" "gateway" {
   resource_group_name = azurerm_resource_group.main.name
   os_type             = "Windows"
   sku_name            = "F1"
+
+  depends_on = [azurerm_resource_group.main]
 }
 
+# Windows Web App for Gateway (YARP Reverse Proxy)
 resource "azurerm_windows_web_app" "gateway" {
   count               = local.create_gateway ? 1 : 0
   name                = "${local.resource_prefix}-gateway-webapp"
@@ -155,20 +204,53 @@ resource "azurerm_windows_web_app" "gateway" {
     "ASPNETCORE_ENVIRONMENT" = "Production"
     "BACKEND_URLS"           = var.backend_urls
   }
+
+  depends_on = [
+    azurerm_resource_group.main,
+    azurerm_service_plan.gateway
+  ]
 }
+
+# ============================================
+# OUTPUTS
+# ============================================
 
 output "resource_group" {
   value = azurerm_resource_group.main.name
 }
 
+output "project_type" {
+  value = var.project_type
+}
+
+# Backend outputs
 output "webapp_name" {
   value = local.is_backend ? azurerm_windows_web_app.main[0].name : ""
 }
 
+output "webapp_url" {
+  value = local.is_backend ? "https://${azurerm_windows_web_app.main[0].default_hostname}" : ""
+}
+
+# Frontend outputs
 output "static_webapp_name" {
   value = local.is_frontend ? azurerm_static_web_app.main[0].name : ""
 }
 
+output "static_webapp_url" {
+  value = local.is_frontend ? "https://${azurerm_static_web_app.main[0].default_host_name}" : ""
+}
+
+output "static_webapp_api_key" {
+  value     = local.is_frontend ? azurerm_static_web_app.main[0].api_key : ""
+  sensitive = true
+}
+
+# Gateway outputs
 output "gateway_webapp_name" {
   value = local.create_gateway ? azurerm_windows_web_app.gateway[0].name : ""
+}
+
+output "gateway_webapp_url" {
+  value = local.create_gateway ? "https://${azurerm_windows_web_app.gateway[0].default_hostname}" : ""
 }
