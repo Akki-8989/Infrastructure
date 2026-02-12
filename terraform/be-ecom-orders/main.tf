@@ -62,7 +62,6 @@ resource "azurerm_service_plan" "main" {
   resource_group_name = azurerm_resource_group.main.name
   os_type             = "Windows"
   sku_name            = "F1"
-  depends_on          = [azurerm_resource_group.main]
 }
 
 resource "azurerm_windows_web_app" "main" {
@@ -71,11 +70,18 @@ resource "azurerm_windows_web_app" "main" {
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   service_plan_id     = azurerm_service_plan.main[0].id
+
   site_config {
     always_on = false
-    application_stack { dotnet_version = "v8.0" }
+    application_stack {
+      dotnet_version = "v8.0"
+    }
   }
-  app_settings = { "ASPNETCORE_ENVIRONMENT" = "Production" }
+
+  app_settings = {
+    "ASPNETCORE_ENVIRONMENT" = "Production"
+  }
+
   dynamic "connection_string" {
     for_each = local.create_sql_server ? [1] : []
     content {
@@ -84,7 +90,6 @@ resource "azurerm_windows_web_app" "main" {
       value = "Server=tcp:${azurerm_mssql_server.main[0].fully_qualified_domain_name},1433;Initial Catalog=${azurerm_mssql_database.main[0].name};User ID=sqladmin;Password=${var.sql_admin_password};Encrypt=true;TrustServerCertificate=false;"
     }
   }
-  depends_on = [azurerm_resource_group.main, azurerm_service_plan.main]
 }
 
 resource "azurerm_mssql_server" "main" {
@@ -95,24 +100,13 @@ resource "azurerm_mssql_server" "main" {
   version                      = "12.0"
   administrator_login          = "sqladmin"
   administrator_login_password = var.sql_admin_password
-  depends_on                   = [azurerm_resource_group.main]
 }
 
 resource "azurerm_mssql_database" "main" {
-  count      = local.create_sql_server ? 1 : 0
-  name       = "${local.resource_prefix}-db"
-  server_id  = azurerm_mssql_server.main[0].id
-  sku_name   = "Basic"
-  depends_on = [azurerm_mssql_server.main]
-}
-
-resource "azurerm_mssql_firewall_rule" "allow_azure" {
-  count            = local.create_sql_server ? 1 : 0
-  name             = "AllowAzureServices"
-  server_id        = azurerm_mssql_server.main[0].id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
-  depends_on       = [azurerm_mssql_server.main]
+  count     = local.create_sql_server ? 1 : 0
+  name      = "${local.resource_prefix}-db"
+  server_id = azurerm_mssql_server.main[0].id
+  sku_name  = "Basic"
 }
 
 resource "azurerm_static_web_app" "main" {
@@ -122,7 +116,6 @@ resource "azurerm_static_web_app" "main" {
   location            = "eastasia"
   sku_tier            = "Free"
   sku_size            = "Free"
-  depends_on          = [azurerm_resource_group.main]
 }
 
 resource "azurerm_service_plan" "gateway" {
@@ -132,7 +125,6 @@ resource "azurerm_service_plan" "gateway" {
   resource_group_name = azurerm_resource_group.main.name
   os_type             = "Windows"
   sku_name            = "F1"
-  depends_on          = [azurerm_resource_group.main]
 }
 
 resource "azurerm_windows_web_app" "gateway" {
@@ -141,24 +133,32 @@ resource "azurerm_windows_web_app" "gateway" {
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   service_plan_id     = azurerm_service_plan.gateway[0].id
+
   site_config {
     always_on = false
-    application_stack { dotnet_version = "v8.0" }
+    application_stack {
+      dotnet_version = "v8.0"
+    }
   }
+
   app_settings = {
     "ASPNETCORE_ENVIRONMENT" = "Production"
     "BACKEND_URLS"           = var.backend_urls
   }
-  depends_on = [azurerm_resource_group.main, azurerm_service_plan.gateway]
 }
 
-output "resource_group"      { value = azurerm_resource_group.main.name }
-output "project_type"        { value = var.project_type }
-output "webapp_name"         { value = local.is_backend ? azurerm_windows_web_app.main[0].name : "" }
-output "webapp_url"          { value = local.is_backend ? "https://${azurerm_windows_web_app.main[0].default_hostname}" : "" }
-output "static_webapp_name"  { value = local.is_frontend ? azurerm_static_web_app.main[0].name : "" }
-output "static_webapp_url"   { value = local.is_frontend ? "https://${azurerm_static_web_app.main[0].default_host_name}" : "" }
-output "static_webapp_api_key" { value = local.is_frontend ? azurerm_static_web_app.main[0].api_key : "" ; sensitive = true }
-output "gateway_webapp_name" { value = local.create_gateway ? azurerm_windows_web_app.gateway[0].name : "" }
-output "gateway_webapp_url"  { value = local.create_gateway ? "https://${azurerm_windows_web_app.gateway[0].default_hostname}" : "" }
+output "resource_group" {
+  value = azurerm_resource_group.main.name
+}
 
+output "webapp_name" {
+  value = local.is_backend ? azurerm_windows_web_app.main[0].name : ""
+}
+
+output "static_webapp_name" {
+  value = local.is_frontend ? azurerm_static_web_app.main[0].name : ""
+}
+
+output "gateway_webapp_name" {
+  value = local.create_gateway ? azurerm_windows_web_app.gateway[0].name : ""
+}
