@@ -34,6 +34,20 @@ variable "project_type" {
   default     = "backend"
 }
 
+# ← NEW: Single backend URL (Scenario 1)
+variable "backend_api_url" {
+  type        = string
+  description = "Backend API URL for frontend to connect to (single backend scenario)"
+  default     = ""
+}
+
+# ← NEW: Multiple backend URLs comma-separated (Scenario 2 - triggers gateway)
+variable "backend_urls" {
+  type        = string
+  description = "Comma-separated backend URLs (multiple backends scenario - auto-creates API gateway)"
+  default     = ""
+}
+
 locals {
   resource_prefix = replace(
     replace(lower(var.app_name), "_", "-"),
@@ -43,6 +57,9 @@ locals {
   create_sql_server = var.sql_admin_password != "" && var.project_type == "backend"
   is_frontend       = var.project_type == "frontend"
   is_backend        = var.project_type == "backend"
+
+  # ← NEW: Gateway created only when frontend has multiple backends
+  create_gateway = var.backend_urls != "" && local.is_frontend
 }
 
 # Resource Group
@@ -156,6 +173,49 @@ resource "azurerm_static_web_app" "main" {
 }
 
 # ============================================
+# ← NEW: API GATEWAY RESOURCES (Conditional)
+# Only created when frontend has multiple backends
+# ============================================
+
+# App Service Plan for Gateway
+resource "azurerm_service_plan" "gateway" {
+  count               = local.create_gateway ? 1 : 0
+  name                = "${local.resource_prefix}-gateway-plan"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  os_type             = "Windows"
+  sku_name            = "F1"
+
+  depends_on = [azurerm_resource_group.main]
+}
+
+# Windows Web App for Gateway (YARP Reverse Proxy)
+resource "azurerm_windows_web_app" "gateway" {
+  count               = local.create_gateway ? 1 : 0
+  name                = "${local.resource_prefix}-gateway-webapp"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  service_plan_id     = azurerm_service_plan.gateway[0].id
+
+  site_config {
+    always_on = false
+    application_stack {
+      dotnet_version = "v8.0"
+    }
+  }
+
+  app_settings = {
+    "ASPNETCORE_ENVIRONMENT" = "Production"
+    "BACKEND_URLS"           = var.backend_urls
+  }
+
+  depends_on = [
+    azurerm_resource_group.main,
+    azurerm_service_plan.gateway
+  ]
+}
+
+# ============================================
 # OUTPUTS
 # ============================================
 
@@ -188,4 +248,13 @@ output "static_webapp_url" {
 output "static_webapp_api_key" {
   value     = local.is_frontend ? azurerm_static_web_app.main[0].api_key : ""
   sensitive = true
+}
+
+# ← NEW: Gateway outputs
+output "gateway_webapp_name" {
+  value = local.create_gateway ? azurerm_windows_web_app.gateway[0].name : ""
+}
+
+output "gateway_webapp_url" {
+  value = local.create_gateway ? "https://${azurerm_windows_web_app.gateway[0].default_hostname}" : ""
 }
