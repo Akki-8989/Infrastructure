@@ -1,0 +1,12 @@
+{
+  "links": [
+    {
+      "frontend": "ui-ecom-app",
+      "backends": [
+        "be-ecom-products",
+        "be-ecom-orders",
+        "be-ecom-users"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,311 @@
+name: Reusable Deploy Workflow - be-ecom-users
+
+on:
+  workflow_call:
+    inputs:
+      repo_name:
+        required: true
+        type: string
+      infra_repo:
+        required: true
+        type: string
+      backend_api_url:
+        required: false
+        type: string
+      backend_urls:
+        required: false
+        type: string
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  NODE_VERSION: '20.x'
+
+jobs:
+  detect-and-setup:
+    runs-on: ubuntu-latest
+    outputs:
+      project_type: ${{ steps.detect.outputs.project_type }}
+      project_path: ${{ steps.detect.outputs.project_path }}
+      build_command: ${{ steps.detect.outputs.build_command }}
+      output_path: ${{ steps.detect.outputs.output_path }}
+      api_url: ${{ steps.compute_api_url.outputs.url }}
+      needs_gateway: ${{ steps.compute_api_url.outputs.needs_gateway }}
+    steps:
+      - name: Checkout Application Repository
+        uses: actions/checkout@v4
+      - name: Detect Project Type
+        id: detect
+        run: |
+          PROJECT_TYPE="backend"
+          if [ -f "package.json" ]; then
+            if grep -q '"react"\|"vue"\|"@angular/core"\|"next"\|"vite"' package.json 2>/dev/null; then
+              PROJECT_TYPE="frontend"
+            fi
+          fi
+          if find . -name "*.csproj" -type f | head -1 | grep -q "."; then
+            if [ "$PROJECT_TYPE" != "frontend" ]; then
+              PROJECT_TYPE="backend"
+            fi
+          fi
+          echo "project_type=$PROJECT_TYPE" >> $GITHUB_OUTPUT
+          if [ "$PROJECT_TYPE" = "frontend" ]; then
+            if [ -f "package.json" ]; then
+              if grep -q '"vite"\|"@vitejs"' package.json; then
+                echo "build_command=npm run build" >> $GITHUB_OUTPUT
+                echo "output_path=dist" >> $GITHUB_OUTPUT
+              elif grep -q '"react-scripts"' package.json; then
+                echo "build_command=npm run build" >> $GITHUB_OUTPUT
+                echo "output_path=build" >> $GITHUB_OUTPUT
+              else
+                echo "build_command=npm run build" >> $GITHUB_OUTPUT
+                echo "output_path=dist" >> $GITHUB_OUTPUT
+              fi
+            fi
+            echo "project_path=." >> $GITHUB_OUTPUT
+          else
+            CSPROJ_PATH=$(find . -name "*.csproj" -type f | head -1)
+            if [ -n "$CSPROJ_PATH" ]; then
+              echo "project_path=$CSPROJ_PATH" >> $GITHUB_OUTPUT
+            else
+              echo "project_path=." >> $GITHUB_OUTPUT
+            fi
+            echo "build_command=dotnet build" >> $GITHUB_OUTPUT
+            echo "output_path=publish" >> $GITHUB_OUTPUT
+          fi
+      - name: Compute API URL
+        id: compute_api_url
+        run: |
+          if [ -n "${{ inputs.backend_urls }}" ]; then
+            SLUG=$(echo "${{ inputs.repo_name }}" | tr '[:upper:]' '[:lower:]' | tr '_.' '--')
+            echo "url=https://${SLUG}-gateway-webapp.azurewebsites.net" >> $GITHUB_OUTPUT
+            echo "needs_gateway=true" >> $GITHUB_OUTPUT
+          elif [ -n "${{ inputs.backend_api_url }}" ]; then
+            echo "url=${{ inputs.backend_api_url }}" >> $GITHUB_OUTPUT
+            echo "needs_gateway=false" >> $GITHUB_OUTPUT
+          else
+            echo "url=" >> $GITHUB_OUTPUT
+            echo "needs_gateway=false" >> $GITHUB_OUTPUT
+          fi
+
+  terraform:
+    runs-on: ubuntu-latest
+    needs: detect-and-setup
+    outputs:
+      webapp_name: ${{ steps.terraform_output.outputs.webapp_name }}
+      resource_group: ${{ steps.terraform_output.outputs.resource_group }}
+      static_webapp_name: ${{ steps.terraform_output.outputs.static_webapp_name }}
+      deployment_token: ${{ steps.terraform_output.outputs.deployment_token }}
+      gateway_webapp_name: ${{ steps.terraform_output.outputs.gateway_webapp_name }}
+    steps:
+      - name: Checkout Infrastructure Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ inputs.infra_repo }}
+          path: infra
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: ./infra/terraform/be-ecom-users
+        run: terraform init
+      - name: Terraform Plan
+        working-directory: ./infra/terraform/be-ecom-users
+        run: |
+          PROJECT_TYPE="${{ needs.detect-and-setup.outputs.project_type }}"
+          TF_VARS="-var=app_name=be-ecom-users -var=project_type=$PROJECT_TYPE"
+          if [ -n "${{ secrets.SQL_ADMIN_PASSWORD }}" ] && [ "$PROJECT_TYPE" = "backend" ]; then
+            TF_VARS="$TF_VARS -var=sql_admin_password=${{ secrets.SQL_ADMIN_PASSWORD }}"
+          fi
+          if [ -n "${{ inputs.backend_api_url }}" ]; then
+            TF_VARS="$TF_VARS -var=backend_api_url=${{ inputs.backend_api_url }}"
+          fi
+          if [ -n "${{ inputs.backend_urls }}" ]; then
+            TF_VARS="$TF_VARS -var=backend_urls=${{ inputs.backend_urls }}"
+          fi
+          terraform plan $TF_VARS -out=tfplan
+      - name: Terraform Apply
+        working-directory: ./infra/terraform/be-ecom-users
+        run: terraform apply -auto-approve tfplan
+      - name: Get Terraform Outputs
+        id: terraform_output
+        working-directory: ./infra/terraform/be-ecom-users
+        run: |
+          echo "resource_group=$(terraform output -raw resource_group)" >> $GITHUB_OUTPUT
+          PROJECT_TYPE="${{ needs.detect-and-setup.outputs.project_type }}"
+          if [ "$PROJECT_TYPE" = "backend" ]; then
+            echo "webapp_name=$(terraform output -raw webapp_name)" >> $GITHUB_OUTPUT
+          else
+            echo "static_webapp_name=$(terraform output -raw static_webapp_name)" >> $GITHUB_OUTPUT
+            echo "deployment_token=$(terraform output -raw static_webapp_api_key)" >> $GITHUB_OUTPUT
+            GATEWAY_NAME=$(terraform output -raw gateway_webapp_name 2>/dev/null || echo "")
+            if [ -n "$GATEWAY_NAME" ]; then
+              echo "gateway_webapp_name=$GATEWAY_NAME" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  build-backend:
+    runs-on: ubuntu-latest
+    needs: [detect-and-setup, terraform]
+    if: needs.detect-and-setup.outputs.project_type == 'backend'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - run: dotnet restore ${{ needs.detect-and-setup.outputs.project_path }}
+      - run: dotnet build ${{ needs.detect-and-setup.outputs.project_path }} --configuration Release --no-restore
+      - run: dotnet publish ${{ needs.detect-and-setup.outputs.project_path }} --configuration Release --output ./publish --no-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webapp-artifact
+          path: ./publish
+
+  build-frontend:
+    runs-on: ubuntu-latest
+    needs: [detect-and-setup, terraform]
+    if: needs.detect-and-setup.outputs.project_type == 'frontend'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Build
+        run: ${{ needs.detect-and-setup.outputs.build_command }}
+        env:
+          CI: false
+          VITE_API_URL: ${{ needs.detect-and-setup.outputs.api_url }}
+          REACT_APP_API_URL: ${{ needs.detect-and-setup.outputs.api_url }}
+          NEXT_PUBLIC_API_URL: ${{ needs.detect-and-setup.outputs.api_url }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-artifact
+          path: ${{ needs.detect-and-setup.outputs.output_path }}
+
+  build-gateway:
+    runs-on: ubuntu-latest
+    needs: [detect-and-setup, terraform]
+    if: needs.detect-and-setup.outputs.needs_gateway == 'true'
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Generate YARP Gateway
+        run: |
+          dotnet new web -n GatewayApp --no-https
+          cd GatewayApp
+          dotnet add package Yarp.ReverseProxy
+          cat > Program.cs << 'GWCODE'
+          using Yarp.ReverseProxy.Configuration;
+          var builder = WebApplication.CreateBuilder(args);
+          var backendUrls = builder.Configuration["BACKEND_URLS"] ?? Environment.GetEnvironmentVariable("BACKEND_URLS") ?? "";
+          var backends = backendUrls.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+          var routes = new List<RouteConfig>();
+          var clusters = new List<ClusterConfig>();
+          foreach (var url in backends)
+          {
+              var uri = new Uri(url);
+              var name = uri.Host.Split('.')[0].Replace("-webapp", "");
+              routes.Add(new RouteConfig
+              {
+                  RouteId = name, ClusterId = name,
+                  Match = new RouteMatch { Path = $"/{name}/{**catch-all}" },
+                  Transforms = new List<IReadOnlyDictionary<string, string>>
+                  { new Dictionary<string, string> { { "PathRemovePrefix", $"/{name}" } } }
+              });
+              clusters.Add(new ClusterConfig
+              {
+                  ClusterId = name,
+                  Destinations = new Dictionary<string, DestinationConfig>
+                  { ["default"] = new DestinationConfig { Address = url } }
+              });
+          }
+          builder.Services.AddReverseProxy().LoadFromMemory(routes, clusters);
+          builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+          var app = builder.Build();
+          app.UseCors();
+          app.MapReverseProxy();
+          app.MapGet("/health", () => Results.Ok(new { status = "healthy", backends = backends.Length }));
+          app.Run();
+          GWCODE
+      - name: Build Gateway
+        run: cd GatewayApp && dotnet publish --configuration Release --output ./publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-artifact
+          path: ./GatewayApp/publish
+
+  deploy-backend:
+    runs-on: ubuntu-latest
+    needs: [detect-and-setup, terraform, build-backend]
+    if: needs.detect-and-setup.outputs.project_type == 'backend'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: webapp-artifact
+          path: ./publish
+      - uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ needs.terraform.outputs.webapp_name }}
+          package: ./publish
+
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    needs: [detect-and-setup, terraform, build-frontend]
+    if: needs.detect-and-setup.outputs.project_type == 'frontend'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-artifact
+          path: ./dist
+      - uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ needs.terraform.outputs.deployment_token }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: ./dist
+          skip_app_build: true
+
+  deploy-gateway:
+    runs-on: ubuntu-latest
+    needs: [detect-and-setup, terraform, build-gateway]
+    if: needs.detect-and-setup.outputs.needs_gateway == 'true'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gateway-artifact
+          path: ./gateway-publish
+      - uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ needs.terraform.outputs.gateway_webapp_name }}
+          package: ./gateway-publish
