@@ -13,7 +13,7 @@ provider "azurerm" {
 
 variable "app_name" {
   type        = string
-  description = "Application name"
+  description = "Application name (used for resource naming)"
 }
 
 variable "location" {
@@ -22,32 +22,42 @@ variable "location" {
 }
 
 variable "sql_admin_password" {
-  type      = string
-  default   = ""
-  sensitive = true
+  type        = string
+  description = "SQL Server admin password (optional - if not provided, SQL Server won't be created)"
+  default     = ""
+  sensitive   = true
 }
 
 variable "project_type" {
-  type    = string
-  default = "backend"
+  type        = string
+  description = "Type of project: 'backend' for .NET API, 'frontend' for Static App"
+  default     = "backend"
 }
 
 variable "backend_api_url" {
-  type    = string
-  default = ""
+  type        = string
+  description = "Backend API URL for frontend to connect to (single backend scenario)"
+  default     = ""
 }
 
 variable "backend_urls" {
-  type    = string
-  default = ""
+  type        = string
+  description = "Comma-separated backend URLs (multiple backends scenario - auto-creates API gateway)"
+  default     = ""
 }
 
 locals {
-  resource_prefix   = replace(replace(lower(var.app_name), "_", "-"), ".", "-")
+  resource_prefix = replace(
+    replace(lower(var.app_name), "_", "-"),
+    ".",
+    "-"
+  )
+
   create_sql_server = var.sql_admin_password != "" && var.project_type == "backend"
   is_frontend       = var.project_type == "frontend"
   is_backend        = var.project_type == "backend"
-  create_gateway    = var.backend_urls != "" && local.is_frontend
+
+  create_gateway = var.backend_urls != "" && local.is_frontend
 }
 
 resource "azurerm_resource_group" "main" {
