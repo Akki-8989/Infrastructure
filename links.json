@@ -1,11 +1,24 @@
 {
   "links": [
     {
-      "frontend": "ui-ecom-app",
+      "frontend": "ui-dotnet-app",
       "backends": [
-        "be-ecom-products",
-        "be-ecom-orders",
-        "be-ecom-users"
+        "be-dotnet-products",
+        "be-dotnet-orders"
+      ]
+    },
+    {
+      "frontend": "ui-node-app",
+      "backends": [
+        "be-node-products",
+        "be-node-orders"
+      ]
+    },
+    {
+      "frontend": "ui-python-app",
+      "backends": [
+        "be-python-products",
+        "be-python-orders"
       ]
     }
   ]
