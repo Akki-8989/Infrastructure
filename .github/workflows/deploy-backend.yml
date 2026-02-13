@@ -445,12 +445,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
 
       - name: Node.js Install and Build
         if: needs.detect-and-setup.outputs.runtime_stack == 'node'
         run: |
-          npm ci
+          npm install
           npm run build --if-present
           mkdir -p ./publish
           # Copy all files except .git and node_modules cache
