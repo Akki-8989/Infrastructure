@@ -435,17 +435,9 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: .NET Restore
-        if: needs.detect-and-setup.outputs.runtime_stack == 'dotnet'
-        run: dotnet restore ${{ needs.detect-and-setup.outputs.project_path }}
-
-      - name: .NET Build
-        if: needs.detect-and-setup.outputs.runtime_stack == 'dotnet'
-        run: dotnet build ${{ needs.detect-and-setup.outputs.project_path }} --configuration Release --no-restore
-
       - name: .NET Publish
         if: needs.detect-and-setup.outputs.runtime_stack == 'dotnet'
-        run: dotnet publish ${{ needs.detect-and-setup.outputs.project_path }} --configuration Release --output ./publish --no-build
+        run: dotnet publish ${{ needs.detect-and-setup.outputs.project_path }} --configuration Release --output ./publish
 
       # === Node.js Build ===
       - name: Setup Node.js
