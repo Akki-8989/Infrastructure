@@ -310,10 +310,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm install
+          npm ci 2>/dev/null || npm install
 
       - name: Build
         run: ${{ needs.detect-and-setup.outputs.build_command }}
@@ -364,7 +365,7 @@ jobs:
               routes.Add(new RouteConfig
               {
                   RouteId = name, ClusterId = name,
-                  Match = new RouteMatch { Path = $"/{name}/{**catch-all}" },
+                  Match = new RouteMatch { Path = $"/{name}/{{**catch-all}}" },
                   Transforms = new List<IReadOnlyDictionary<string, string>>
                   { new Dictionary<string, string> { { "PathRemovePrefix", $"/{name}" } } }
               });
