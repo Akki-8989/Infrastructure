@@ -453,7 +453,7 @@ jobs:
           npm run build --if-present
           mkdir -p ./publish
           # Copy all files except .git and node_modules cache
-          rsync -a --exclude='.git' --exclude='node_modules/.cache' . ./publish/
+          rsync -a --exclude='.git' --exclude='node_modules/.cache' --exclude='publish' . ./publish/
 
       # === Python Build ===
       - name: Setup Python
@@ -468,7 +468,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt --target=".python_packages/lib/site-packages"
           mkdir -p ./publish
-          rsync -a --exclude='.git' . ./publish/
+          rsync -a --exclude='.git' --exclude='publish' . ./publish/
 
       # === Java Build ===
       - name: Setup Java
