@@ -126,6 +126,7 @@ resource "azurerm_windows_web_app" "gateway" {
   app_settings = {
     "ASPNETCORE_ENVIRONMENT" = "Production"
     "BACKEND_URLS"           = var.backend_urls
+    "FRONTEND_URL"           = local.is_frontend ? "https://${azurerm_static_web_app.main[0].default_host_name}" : ""
   }
 
   depends_on = [
