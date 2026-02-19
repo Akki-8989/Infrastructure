@@ -462,8 +462,13 @@ jobs:
             var builder = WebApplication.CreateBuilder(args);
             builder.Services.AddHttpClient("proxy").ConfigurePrimaryHttpMessageHandler(() =>
                 new HttpClientHandler { AllowAutoRedirect = false });
-            builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-                p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+            var frontendUrl = Environment.GetEnvironmentVariable("FRONTEND_URL") ?? "";
+            builder.Services.AddCors(o => o.AddDefaultPolicy(p => {
+                if (string.IsNullOrEmpty(frontendUrl))
+                    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+                else
+                    p.WithOrigins(frontendUrl).AllowAnyHeader().AllowAnyMethod();
+            }));
 
             var app = builder.Build();
             app.UseCors();
