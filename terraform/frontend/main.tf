@@ -43,6 +43,12 @@ variable "backend_urls" {
   default     = ""
 }
 
+variable "tier" {
+  type        = string
+  description = "Deployment tier: free, standard, premium"
+  default     = "free"
+}
+
 # ============================================
 # LOCALS
 # ============================================
@@ -55,6 +61,12 @@ locals {
   )
   is_frontend    = var.project_type == "frontend"
   create_gateway = var.backend_urls != "" && local.is_frontend
+
+  # Tier-based SKU
+  app_sku_name      = var.tier == "premium" ? "S1" : var.tier == "standard" ? "B1" : "F1"
+  static_sku_tier   = var.tier == "free" ? "Free" : "Standard"
+  static_sku_size   = var.tier == "free" ? "Free" : "Standard"
+  always_on         = var.tier != "free"
 }
 
 # ============================================
@@ -75,8 +87,8 @@ resource "azurerm_static_web_app" "main" {
   name                = "${local.resource_prefix}-static"
   resource_group_name = azurerm_resource_group.main.name
   location            = "eastasia"
-  sku_tier            = "Free"
-  sku_size            = "Free"
+  sku_tier            = local.static_sku_tier
+  sku_size            = local.static_sku_size
 
   depends_on = [azurerm_resource_group.main]
 }
@@ -92,7 +104,7 @@ resource "azurerm_service_plan" "gateway" {
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   os_type             = "Windows"
-  sku_name            = "F1"
+  sku_name            = local.app_sku_name
 
   depends_on = [azurerm_resource_group.main]
 }
@@ -105,7 +117,7 @@ resource "azurerm_windows_web_app" "gateway" {
   service_plan_id     = azurerm_service_plan.gateway[0].id
 
   site_config {
-    always_on = false
+    always_on = local.always_on
     application_stack {
       dotnet_version = "v8.0"
     }
